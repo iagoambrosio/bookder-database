@@ -1,0 +1,24 @@
+name: Run Translate Docker and Create PR on Commit Pattern
+on:
+  push:
+    branches:
+      - 'main'
+jobs:
+  run_docker_translate:
+    runs-on: ubuntu-latest
+    if: startsWith(github.event.head_commit.message, 'translate-')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Extract UUID and Run Docker Command
+        id: run_docker_command
+        run: |
+          COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
+          echo "Commit message: $COMMIT_MESSAGE"
+          TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/^translate-//')
+          echo "Extracted part: $TRANSLATE_IDENTIFIER"
+          echo "Pulling Docker image iago0silva/translate:en-pb..."
+          docker pull iago0silva/translate:en-pb
+          echo "Running Docker command: docker run iago0silva/translate:en-pb translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index_en_pb.txt en pb"
+          docker run -v ${{ github.workspace }}:/app/translate iago0silva/translate:en-pb env/bin/python main.py translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index_en_pb.txt en pb
+          cat ${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index_en_pb.txt
