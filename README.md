@@ -1,2 +1,2 @@
-# bookder-database-24573
+# bookder-database
 Repositório para armazenar livros do Bookder
