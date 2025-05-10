@@ -33,8 +33,10 @@ jobs:
           COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
           LANGUAGE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/-translate.*//')
           echo "Language identifier: $LANGUAGE_IDENTIFIER"
+          UUID_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/.*\(translate-.*\)/\1/')
+          echo "START-READ-TRANSLATED-FILE-$UUID_IDENTIFIER"
           TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/.*translate-//')
           echo "START-READ-TRANSLATED-FILE-$TRANSLATE_IDENTIFIER"
-          cat ${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index_en_pb.txt
+          cat ${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index-${LANGUAGE_IDENTIFIER}.txt
           echo "END-READ-TRANSLATED-FILE-$TRANSLATE_IDENTIFIER"
-          curl -X POST "https://utilitary-api.vercel.app/util/file?uuid=${COMMIT_MESSAGE}&filename=index-${LANGUAGE_IDENTIFIER}" -F "file=@${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index-$LANGUAGE_IDENTIFIER.txt"
+          curl -X POST "https://utilitary-api.vercel.app/util/file?uuid=${UUID_IDENTIFIER}&filename=index-${LANGUAGE_IDENTIFIER}.txt" -F "file=@${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index-$LANGUAGE_IDENTIFIER.txt"
