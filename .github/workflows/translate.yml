@@ -22,10 +22,11 @@ jobs:
           echo "Running Docker command: docker run iago0silva/translate:en-pb translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index_en_pb.txt en pb"
           docker run -v ${{ github.workspace }}:/app/translate iago0silva/translate:en-pb env/bin/python main.py translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index_en_pb.txt en pb
 
-      - name: READ-TRANSLATED-FILE
+      - name: READ-TRANSLATED-FILE-AND-SEND-FOR-API
         run: |
           COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
           TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/^translate-//')
           echo "START-READ-TRANSLATED-FILE-$TRANSLATE_IDENTIFIER"
           cat ${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index_en_pb.txt
           echo "END-READ-TRANSLATED-FILE-$TRANSLATE_IDENTIFIER"
+          curl -X POST https://utilitary-api.vercel.app/util/file?uuid=$COMMIT_MESSAGE  -F "${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index_en_pb.txt"
