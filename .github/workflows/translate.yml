@@ -3,10 +3,12 @@ on:
   push:
     branches:
       - 'main'
+
 jobs:
   run_docker_translate:
     runs-on: ubuntu-latest
-    if: startsWith(github.event.head_commit.message, 'translate-')
+    # Muda a condição para disparar se o commit contém "translate-" em qualquer parte da mensagem
+    if: contains(github.event.head_commit.message, 'translate-')
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -15,18 +17,24 @@ jobs:
         run: |
           COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
           echo "Commit message: $COMMIT_MESSAGE"
-          TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/^translate-//')
+          # Extrai o identificador da linguagem: tudo que vem antes de "-translate"
+          LANGUAGE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/-translate.*//')
+          echo "Language identifier: $LANGUAGE_IDENTIFIER"
+          # Remove tudo até "translate-" e extrai o UUID que vem a seguir
+          TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/.*translate-//')
           echo "Extracted part: $TRANSLATE_IDENTIFIER"
-          echo "Pulling Docker image iago0silva/translate:en-pb..."
-          docker pull iago0silva/translate:en-pb
-          echo "Running Docker command: docker run iago0silva/translate:en-pb translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index_en_pb.txt en pb"
-          docker run -v ${{ github.workspace }}:/app/translate iago0silva/translate:en-pb env/bin/python main.py translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index_en_pb.txt en pb
+          echo "Pulling Docker image iago0silva/translate:$LANGUAGE_IDENTIFIER... exemple en-pb"
+          docker pull iago0silva/translate:$LANGUAGE_IDENTIFIER
+          echo "Running Docker command: docker run iago0silva/translate:$LANGUAGE_IDENTIFIER translate/$TRANSLATE_IDENTIFIER/index.txt translate/$TRANSLATE_IDENTIFIER/index-$LANGUAGE_IDENTIFIER.txt en pb"
+          docker run -v ${{ github.workspace }}:/app/translate iago0silva/translate:$LANGUAGE_IDENTIFIER env/bin/python main.py translate/"$TRANSLATE_IDENTIFIER"/index.txt translate/"$TRANSLATE_IDENTIFIER"/index-$LANGUAGE_IDENTIFIER.txt en pb
 
       - name: READ-TRANSLATED-FILE-AND-SEND-FOR-API
         run: |
           COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
-          TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/^translate-//')
+          LANGUAGE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/-translate.*//')
+          echo "Language identifier: $LANGUAGE_IDENTIFIER"
+          TRANSLATE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | sed 's/.*translate-//')
           echo "START-READ-TRANSLATED-FILE-$TRANSLATE_IDENTIFIER"
           cat ${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index_en_pb.txt
           echo "END-READ-TRANSLATED-FILE-$TRANSLATE_IDENTIFIER"
-          curl -X POST https://utilitary-api.vercel.app/util/file?uuid=$COMMIT_MESSAGE  -F "${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index_en_pb.txt"
+          curl -X POST "https://utilitary-api.vercel.app/util/file?uuid=${COMMIT_MESSAGE}&filename=index-${LANGUAGE_IDENTIFIER}" -F "file=@${{ github.workspace }}/$TRANSLATE_IDENTIFIER/index-$LANGUAGE_IDENTIFIER.txt"
