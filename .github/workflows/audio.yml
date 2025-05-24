@@ -10,35 +10,67 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      - name: Cache Docker Image
+      - name: Restore Docker image cache
+        id: docker-cache
         uses: actions/cache@v3
         with:
           path: /tmp/audio-image.tar
-          key: ${{ runner.os }}-audio-image
-
-      - name: Load Cached Docker Image (se existir)
+          key: ${{ runner.os }}-audio-image-v3
+      - name: Load Docker image from cache (if exists)
+        if: steps.docker-cache.outputs.cache-hit == 'true'
         run: |
-          if [ -f /tmp/audio-image.tar ]; then
-            docker load -i /tmp/audio-image.tar
-            echo "Imagem carregada do cache!"
-          else
-            echo "Cache não encontrado, baixando a imagem..."
-            docker pull iago0silva/audio:v1
-            docker save -o /tmp/audio-image.tar iago0silva/audio:v1
-          fi
+          echo "Loading Docker image from cache..."
+          docker load -i /tmp/audio-image.tar
+      - name: Pull Docker image if not in cache
+        if: steps.docker-cache.outputs.cache-hit != 'true'
+        run: |
+          echo "Pulling Docker image..."
+          docker pull iago0silva/audio:v3
+          docker save iago0silva/audio:v3 -o /tmp/audio-image.tar
       - name: Extract UUID and File from Commit Message
         id: extract_info
         run: |
-          COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
+          COMMIT_MESSAGE='${{ github.event.head_commit.message }}'
           UUID_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.uuid')
           FILE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.file')
+          VOICE=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.voice')
+          LANGUAGE=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.language')
+          FILE_ID=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.fileId')
           echo "UUID: $UUID_IDENTIFIER"
           echo "File: $FILE_IDENTIFIER"
+          echo "Voice: $VOICE"
+          echo "Language: $LANGUAGE"
+          echo "File ID: $FILE_ID"
           echo "UUID_IDENTIFIER=$UUID_IDENTIFIER" >> $GITHUB_ENV
           echo "FILE_IDENTIFIER=$FILE_IDENTIFIER" >> $GITHUB_ENV
+          echo "VOICE=$VOICE" >> $GITHUB_ENV
+          echo "LANGUAGE=$LANGUAGE" >> $GITHUB_ENV
+          echo "FILE_ID=$FILE_ID" >> $GITHUB_ENV
       - name: Run Docker Command
         run: |
-          docker run -v ${{ github.workspace }}:/app iago0silva/audio:v1 python synthesize.py $UUID_IDENTIFIER/$FILE_IDENTIFIER
+          docker run -v ${{ github.workspace }}:/app/output iago0silva/audio:v3 python synthesize.py output/$UUID_IDENTIFIER/$FILE_IDENTIFIER $LANGUAGE $VOICE
       - name: Read Audio File and Send to API
         run: |
-          curl -X POST "https://utilitary-api.vercel.app/util/file?uuid=${UUID_IDENTIFIER}&filename=${FILE_IDENTIFIER}" -F "file=@${{ github.workspace }}/${UUID_IDENTIFIER}/${FILE_IDENTIFIER}"
+          BASE_URL="https://utilitary-api.vercel.app/util"
+          FILE_PATH="$VOICE.wav"
+          FILE_NAME=$(basename "$FILE_PATH")
+          CHUNK_SIZE=4048576
+          echo "Initiating upload..."
+          TOTAL_CHUNKS=$(($(stat -c%s "$FILE_PATH") / CHUNK_SIZE + 1))
+          split -b "$CHUNK_SIZE" -d --additional-suffix=.chunk "$FILE_PATH" chunk_
+          for CHUNK_FILE in chunk_*.chunk; do
+            CHUNK_INDEX=$(echo "$CHUNK_FILE" | grep -o '[0-9]\+')
+            RESPONSE=$(curl -s -X POST "$BASE_URL/enviar-chunk" \
+              -F "fileId=$FILE_ID" \
+              -F "chunkIndex=$CHUNK_INDEX" \
+              -F "chunk=@$CHUNK_FILE")
+            MESSAGE=$(echo "$RESPONSE" | jq -r '.message')
+            if [ "$MESSAGE" == "null" ]; then
+              echo "Failed to upload chunk $CHUNK_INDEX: $RESPONSE"
+              rm -f chunk_*.chunk
+              exit 1
+            fi
+            echo "Chunk $CHUNK_INDEX uploaded successfully."
+          done
+          rm -f chunk_*.chunk
+          echo "done upload"
