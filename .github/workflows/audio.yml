@@ -73,4 +73,5 @@ jobs:
             echo "Chunk $CHUNK_INDEX uploaded successfully."
           done
           rm -f chunk_*.chunk
+          curl -X POST "https://utilitary-api.vercel.app/util/complete-count" -H "Content-Type: application/x-www-form-urlencoded" -d "fileId=$FILE_ID&chunk=$TOTAL_CHUNKS"
           echo "done upload"
