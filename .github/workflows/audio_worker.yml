@@ -1,0 +1,151 @@
+name: Generate Audio Worker
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+jobs:
+  run_docker_audio:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Extract UUID and File from Commit Message
+        id: extract_info
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          COMMIT_MESSAGE=$COMMIT_MSG
+          UUID_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.uuid')
+          FILE_IDENTIFIER=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.file')
+          VOICE=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.voice')
+          LANGUAGE=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.language')
+          FILE_ID=$(echo "$COMMIT_MESSAGE" | jq -r '.audio.fileId')
+          echo "UUID_IDENTIFIER=$UUID_IDENTIFIER" >> $GITHUB_ENV
+          echo "FILE_IDENTIFIER=$FILE_IDENTIFIER" >> $GITHUB_ENV
+          echo "VOICE=$VOICE" >> $GITHUB_ENV
+          echo "LANGUAGE=$LANGUAGE" >> $GITHUB_ENV
+          echo "FILE_ID=$FILE_ID" >> $GITHUB_ENV
+          echo "COMMIT_MESSAGE=$COMMIT_MESSAGE" >> $GITHUB_ENV
+      - name: Count files and decide flow
+        id: verify_counts
+        run: |
+          COUNT_SPLIT=$(ls ${{ github.workspace }}/split_files | wc -l)
+          COUNT_TARGET=$(ls ${{ github.workspace }}/$UUID_IDENTIFIER/*.mp3 2>/dev/null | wc -l)
+          echo "COUNT_SPLIT=$COUNT_SPLIT" >> $GITHUB_ENV
+          echo "COUNT_TARGET=$COUNT_TARGET" >> $GITHUB_ENV
+          if [ "$COUNT_SPLIT" -eq "$COUNT_TARGET" ]; then
+            echo "MERGE_READY=true" >> $GITHUB_OUTPUT
+          else
+            echo "MERGE_READY=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Merge and Commit Final File (na branch main)
+        if: steps.verify_counts.outputs.MERGE_READY == 'true'
+        run: |
+          cat ${{ github.workspace }}/$UUID_IDENTIFIER/part_* > ${{ github.workspace }}/$UUID_IDENTIFIER/$FILE_IDENTIFIER.mp3
+          FINAL_FILE="${{ github.workspace }}/${UUID_IDENTIFIER}/${FILE_IDENTIFIER}.mp3"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin main
+          git checkout main
+          RETRIES=3
+          COUNT=0
+          SUCCESS=false
+          while [ $COUNT -lt $RETRIES ]; do
+            git reset --hard origin/main
+            git pull origin main
+            git add "$FINAL_FILE"
+            if git diff --cached --quiet; then
+              echo "Nenhuma mudança detectada, nada para commitar."
+              SUCCESS=true
+              break
+            fi
+            git commit -m "FINAL:$FILE_IDENTIFIER.mp3"
+            if git push origin main; then
+              echo "Commit e push realizados com sucesso na branch main."
+              SUCCESS=true
+              break
+            else
+              echo "Conflito ao fazer push. Tentando novamente..."
+              COUNT=$((COUNT+1))
+              sleep 2
+            fi
+          done
+          if [ "$SUCCESS" = false ]; then
+            echo "Falha ao commitar na branch main após $RETRIES tentativas."
+            exit 1
+          fi
+      - name: Enviar arquivo vazio para API
+        if: steps.verify_counts.outputs.MERGE_READY == 'true'
+        run: |
+          BASE_URL="https://utilitary-api.vercel.app/util"
+          echo "1" > empty_chunk.chunk
+          RESPONSE=$(curl -s -X POST "$BASE_URL/enviar-chunk" \
+          -F "fileId=$FILE_ID" \
+          -F "chunkIndex=0" \
+          -F "chunk=@empty_chunk.chunk")
+          echo "Resposta da API: $RESPONSE"
+          curl -s -X POST "$BASE_URL/complete-count" \
+          -H "Content-Type: application/x-www-form-urlencoded" \
+          -d "fileId=$FILE_ID&chunk=1"
+          echo "Upload concluído com arquivo vazio."
+          rm -f empty_chunk.chunk
+      - name: Delete temporary Branch for audio
+        if: steps.verify_counts.outputs.MERGE_READY == 'true'
+        run: |
+          git push origin --delete audio-${{ env.UUID_IDENTIFIER }}
+      - name: Restore Docker image cache
+        if: steps.verify_counts.outputs.MERGE_READY == 'false'
+        id: docker-cache
+        uses: actions/cache@v3
+        with:
+          path: /tmp/audio-image.tar
+          key: ${{ runner.os }}-audio-image-v3
+      - name: Load Docker image from cache (if exists)
+        if: steps.verify_counts.outputs.MERGE_READY == 'false' && steps.docker-cache.outputs.cache-hit == 'true'
+        run: docker load -i /tmp/audio-image.tar
+
+      - name: Pull Docker image if not in cache
+        if: steps.verify_counts.outputs.MERGE_READY == 'false' && steps.docker-cache.outputs.cache-hit != 'true'
+        run: |
+          docker pull iago0silva/audio:v3
+          docker save iago0silva/audio:v3 -o /tmp/audio-image.tar
+
+      - name: Determine next file to process
+        if: steps.verify_counts.outputs.MERGE_READY == 'false'
+        id: check_files
+        run: |
+          MP3_COUNT=$(ls ${{ github.workspace }}/$UUID_IDENTIFIER/*.mp3 2>/dev/null | wc -l)
+          if [ "$MP3_COUNT" -eq 0 ]; then
+            PART_FILE=$(ls ${{ github.workspace }}/split_files | sort | head -n 1)
+          else
+            LAST_PROCESSED=$(ls ${{ github.workspace }}/$UUID_IDENTIFIER/*.mp3 | xargs -n 1 basename | sort | tail -n 1 | sed 's/.mp3//')
+            PART_FILE=$(ls ${{ github.workspace }}/split_files | sort | awk -v last="$LAST_PROCESSED" '$0 > last' | head -n 1)
+          fi
+          echo "PART_FILE=$PART_FILE" >> $GITHUB_ENV
+
+      - name: Run Docker Command
+        if: steps.verify_counts.outputs.MERGE_READY == 'false'
+        run: |
+          docker run -v ${{ github.workspace }}:/app/output iago0silva/audio:v3 python synthesize.py output/split_files/${{ env.PART_FILE }} ${{ env.LANGUAGE }} ${{ env.VOICE }}
+
+      - name: Move and rename processed file
+        if: steps.verify_counts.outputs.MERGE_READY == 'false'
+        run: |
+          mv ${{ github.workspace }}/${{ env.VOICE }}.mp3 ${{ github.workspace }}/$UUID_IDENTIFIER/${{ env.PART_FILE }}.mp3
+
+      - name: Commit message for parts
+        if: steps.verify_counts.outputs.MERGE_READY == 'false'
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ github.workspace }}/$UUID_IDENTIFIER/${{ env.PART_FILE }}.mp3
+          git commit -m "$COMMIT_MESSAGE"
+          git push origin audio-${{ env.UUID_IDENTIFIER }}
+
+      - name: Trigger next workflow
+        if: steps.verify_counts.outputs.MERGE_READY == 'false'
+        run: |
+          curl -X POST -H "Accept: application/vnd.github+json" \
+          -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+          https://api.github.com/repos/${{ github.repository }}/actions/workflows/audio_worker.yml/dispatches \
+          -d '{"ref": "audio-${{ env.UUID_IDENTIFIER }}"}'
