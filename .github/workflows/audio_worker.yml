@@ -38,14 +38,34 @@ jobs:
           else
             echo "MERGE_READY=false" >> $GITHUB_OUTPUT
           fi
+      - name: Check MP3 File Size
+        id: check_file_size
+        run: |
+          cat ${{ github.workspace }}/$UUID_IDENTIFIER/part_* > ${{ github.workspace }}/$UUID_IDENTIFIER/$FILE_IDENTIFIER.mp3
+          FINAL_FILE="${{ github.workspace }}/${UUID_IDENTIFIER}/${FILE_IDENTIFIER}.mp3"
+          FILE_SIZE=$(stat -c%s "$FINAL_FILE")
+          MAX_SIZE=$((100 * 1024 * 1024))
+          echo "Final file size: $FILE_SIZE bytes"
+          if [ "$FILE_SIZE" -gt "$MAX_SIZE" ]; then
+            echo "LFS_NEEDED=true" >> $GITHUB_ENV
+          else
+           echo "LFS_NEEDED=false" >> $GITHUB_ENV
+          fi
+      - name: Setup Git LFS if needed
+        if: env.LFS_NEEDED == 'true'
+        run: |
+          echo "Instalando e configurando Git LFS..."
+          git lfs install 
+          git lfs track "${FILE_IDENTIFIER}.mp3"
+          echo "${FILE_IDENTIFIER}.mp3 filter=lfs diff=lfs merge=lfs -text" >> .gitattributes
       - name: Merge and Commit Final File (na branch main)
         if: steps.verify_counts.outputs.MERGE_READY == 'true'
         run: |
-          cat ${{ github.workspace }}/$UUID_IDENTIFIER/part_* > ${{ github.workspace }}/$UUID_IDENTIFIER/$FILE_IDENTIFIER.mp3
           FINAL_FILE="${{ github.workspace }}/${UUID_IDENTIFIER}/${FILE_IDENTIFIER}.mp3"
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin main
+          git stash
           git checkout main
           RETRIES=3
           COUNT=0
@@ -53,6 +73,8 @@ jobs:
           while [ $COUNT -lt $RETRIES ]; do
             git reset --hard origin/main
             git pull origin main
+            git add .gitattributes
+            git commit -m "$COMMIT_MESSAGE"
             git add "$FINAL_FILE"
             if git diff --cached --quiet; then
               echo "Nenhuma mudança detectada, nada para commitar."
@@ -109,7 +131,6 @@ jobs:
         run: |
           docker pull iago0silva/audio:v3
           docker save iago0silva/audio:v3 -o /tmp/audio-image.tar
-
       - name: Determine next file to process
         if: steps.verify_counts.outputs.MERGE_READY == 'false'
         id: check_files
@@ -122,17 +143,14 @@ jobs:
             PART_FILE=$(ls ${{ github.workspace }}/split_files | sort | awk -v last="$LAST_PROCESSED" '$0 > last' | head -n 1)
           fi
           echo "PART_FILE=$PART_FILE" >> $GITHUB_ENV
-
       - name: Run Docker Command
         if: steps.verify_counts.outputs.MERGE_READY == 'false'
         run: |
           docker run -v ${{ github.workspace }}:/app/output iago0silva/audio:v3 python synthesize.py output/split_files/${{ env.PART_FILE }} ${{ env.LANGUAGE }} ${{ env.VOICE }}
-
       - name: Move and rename processed file
         if: steps.verify_counts.outputs.MERGE_READY == 'false'
         run: |
           mv ${{ github.workspace }}/${{ env.VOICE }}.mp3 ${{ github.workspace }}/$UUID_IDENTIFIER/${{ env.PART_FILE }}.mp3
-
       - name: Commit message for parts
         if: steps.verify_counts.outputs.MERGE_READY == 'false'
         run: |
@@ -141,7 +159,6 @@ jobs:
           git add ${{ github.workspace }}/$UUID_IDENTIFIER/${{ env.PART_FILE }}.mp3
           git commit -m "$COMMIT_MESSAGE"
           git push origin audio-${{ env.UUID_IDENTIFIER }}
-
       - name: Trigger next workflow
         if: steps.verify_counts.outputs.MERGE_READY == 'false'
         run: |
